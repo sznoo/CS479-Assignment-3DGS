@@ -51,7 +51,7 @@ As in our previous assignment on NeRF, we strongly encourage you to review the p
 
 To get started, clone this repository first.
 ```
-git clone --recursive {PROJECT_URL}
+git clone --recursive https://github.com/KAIST-Visual-AI-Group/CS479-Assignment-3DGS
 ```
 
 We recommend creating a virtual environment using `conda`.
