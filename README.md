@@ -233,7 +233,7 @@ For reference, our implementation produces the following metrics:
 
 Compile the following files as a **ZIP** file named `{STUDENT_ID}.zip` and submit the file via Gradescope.
   
-- The folder `gs_renderer` that contains every source code file;
+- The entire project directory containing every source code file;
 - A folder named `{STUDENT_ID}` with four subdirectories containing the rendered images (`.png` files) used for evaluation;
 - A CSV named `{STUDENT_ID}.csv` containing the evaluation metrics from the `evaluate.py` script.
 
