@@ -178,7 +178,7 @@ Next, compute the covariance matrix in the image plane by projecting the world-s
 \boldsymbol{\Sigma}_{\text{2D}} = \mathbf{J} \mathbf{W} \boldsymbol{\Sigma}_{\text{3D}} \mathbf{W}^T \mathbf{J}^T
 ```
 
-where $\mathbf{W}$ is the rigid transformation componenet of the camera space to world space transformation.
+where $\mathbf{W}$ is the rigid transformation component of the camera space to world space transformation.
 
 ### Task 3. Rendering Equation of Point-Based Radiance Fields
 
