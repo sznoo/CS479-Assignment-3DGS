@@ -137,11 +137,14 @@ class GSRasterizer(object):
         """
         # ========================================================
         # TODO: Implement the projection to NDC space
-        p_ndc = None
-        p_view = None
-
+        N = points.shape[0]
+        points_h = torch.cat([points,torch.ones((N, 1), device=points.device)], dim=-1)
+        p_view = points_h @ w2c
+        p_proj = p_view @ proj_mat
+        p_ndc = p_proj / (p_proj[:, 3:4] + 1e-8)
+        
         # TODO: Cull points that are close or behind the camera
-        in_mask = None
+        in_mask = p_view[:, 2] >= z_near
         # ========================================================
 
         return p_ndc, p_view, in_mask
@@ -177,6 +180,9 @@ class GSRasterizer(object):
         """ 
         # ========================================================
         # TODO: Transform 3D mean coordinates to camera space
+        N = mean_3d.shape[0]
+        mean_3d_h = torch.cat([mean_3d,torch.ones((N, 1), device=mean_3d.device)], dim=-1)
+        mean_3d_view = mean_3d_h @ w2c
         # ========================================================
 
         # Transpose the rigid transformation part of the world-to-camera matrix
@@ -185,6 +191,16 @@ class GSRasterizer(object):
         # ========================================================
         # TODO: Compute Jacobian of view transform and projection
         cov_2d = None
+        x = mean_3d_view[:, 0]
+        y = mean_3d_view[:, 1]
+        z = mean_3d_view[:, 2] + 1e-8  # 안전한 나눗셈
+
+        J[:, 0, 0] = f_x / z
+        J[:, 0, 2] = -f_x * x / (z ** 2)
+        J[:, 1, 1] = f_y / z
+        J[:, 1, 2] = -f_y * y / (z ** 2)
+
+        cov_2d = J @ W @ cov_3d @ (W.T) @ (J.T)
         # ========================================================
 
         # add low pass filter here according to E.q. 32
