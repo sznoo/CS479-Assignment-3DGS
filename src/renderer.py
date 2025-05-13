@@ -33,7 +33,7 @@ class GSRasterizer(object):
         rotations = scene.rotations
         shs = scene.shs
         opacities = scene.opacities
-        
+
         # ============================================================================
         # Process camera parameters
         # NOTE: We transpose both camera extrinsic and projection matrices
@@ -59,7 +59,10 @@ class GSRasterizer(object):
 
         # Project Gaussian center positions to NDC
         mean_ndc, mean_view, in_mask = self.project_ndc(
-            mean_3d, world_to_camera, proj_mat, camera.near,
+            mean_3d,
+            world_to_camera,
+            proj_mat,
+            camera.near,
         )
         mean_ndc = mean_ndc[in_mask]
         mean_view = mean_view[in_mask]
@@ -75,24 +78,24 @@ class GSRasterizer(object):
 
         # Project covariance matrices to 2D
         cov_2d = self.compute_cov_2d(
-            mean_3d=mean_3d, 
-            cov_3d=cov_3d, 
+            mean_3d=mean_3d,
+            cov_3d=cov_3d,
             w2c=world_to_camera,
-            f_x=camera.f_x, 
+            f_x=camera.f_x,
             f_y=camera.f_y,
         )
-        
+
         # Compute pixel space coordinates of the projected Gaussian centers
         mean_coord_x = ((mean_ndc[..., 0] + 1) * camera.image_width - 1.0) * 0.5
         mean_coord_y = ((mean_ndc[..., 1] + 1) * camera.image_height - 1.0) * 0.5
         mean_2d = torch.stack([mean_coord_x, mean_coord_y], dim=-1)
 
         color = self.render(
-            camera=camera, 
+            camera=camera,
             mean_2d=mean_2d,
             cov_2d=cov_2d,
             color=color,
-            opacities=opacities, 
+            opacities=opacities,
             depths=depths,
         )
         color = color.reshape(-1, 3)
@@ -101,13 +104,13 @@ class GSRasterizer(object):
 
     @torch.no_grad()
     def get_rgb_from_sh(self, mean_3d, shs, camera):
-        rays_o = camera.cam_center        
+        rays_o = camera.cam_center
         rays_d = mean_3d - rays_o
         rays_d = rays_d / torch.norm(rays_d, dim=-1, keepdim=True)
         color = eval_sh(self.sh_degree, shs.permute(0, 2, 1), rays_d)
         color = torch.clamp_min(color + 0.5, 0.0)
         return color
-    
+
     @jaxtyped(typechecker=typechecked)
     @torch.no_grad()
     def project_ndc(
@@ -123,7 +126,7 @@ class GSRasterizer(object):
     ]:
         """
         Projects points to NDC space.
-        
+
         Args:
         - points: 3D points in object space.
         - w2c: World-to-camera matrix.
@@ -138,11 +141,11 @@ class GSRasterizer(object):
         # ========================================================
         # TODO: Implement the projection to NDC space
         N = points.shape[0]
-        points_h = torch.cat([points,torch.ones((N, 1), device=points.device)], dim=-1)
+        points_h = torch.cat([points, torch.ones((N, 1), device=points.device)], dim=-1)
         p_view = points_h @ w2c
         p_proj = p_view @ proj_mat
         p_ndc = p_proj / (p_proj[:, 3:4] + 1e-8)
-        
+
         # TODO: Cull points that are close or behind the camera
         in_mask = p_view[:, 2] >= z_near
         # ========================================================
@@ -177,11 +180,13 @@ class GSRasterizer(object):
 
         Returns:
         - cov_2d: 2D covariance matrix.
-        """ 
+        """
         # ========================================================
         # TODO: Transform 3D mean coordinates to camera space
         N = mean_3d.shape[0]
-        mean_3d_h = torch.cat([mean_3d,torch.ones((N, 1), device=mean_3d.device)], dim=-1)
+        mean_3d_h = torch.cat(
+            [mean_3d, torch.ones((N, 1), device=mean_3d.device)], dim=-1
+        )
         mean_3d_view = mean_3d_h @ w2c
         # ========================================================
 
@@ -196,11 +201,14 @@ class GSRasterizer(object):
         z = mean_3d_view[:, 2] + 1e-8  # 안전한 나눗셈
 
         J[:, 0, 0] = f_x / z
-        J[:, 0, 2] = -f_x * x / (z ** 2)
+        J[:, 0, 2] = -f_x * x / (z**2)
         J[:, 1, 1] = f_y / z
-        J[:, 1, 2] = -f_y * y / (z ** 2)
+        J[:, 1, 2] = -f_y * y / (z**2)
 
-        cov_2d = J @ W @ cov_3d @ (W.T) @ (J.T)
+        cov_3d_wt = torch.matmul(cov_3d, W.T)
+        cov_3d_view = torch.matmul(W.unsqueeze(0), cov_3d_wt)
+        tmp = torch.bmm(J, cov_3d_view)
+        cov_2d = torch.bmm(tmp, J.transpose(1, 2))
         # ========================================================
 
         # add low pass filter here according to E.q. 32
@@ -219,23 +227,35 @@ class GSRasterizer(object):
         depths: Float[torch.Tensor, "N"],
     ) -> Float[torch.Tensor, "H W 3"]:
         radii = get_radius(cov_2d)
-        rect = get_rect(mean_2d, radii, width=camera.image_width, height=camera.image_height)
+        rect = get_rect(
+            mean_2d, radii, width=camera.image_width, height=camera.image_height
+        )
 
         pix_coord = torch.stack(
-            torch.meshgrid(torch.arange(camera.image_height), torch.arange(camera.image_width), indexing='xy'),
+            torch.meshgrid(
+                torch.arange(camera.image_height),
+                torch.arange(camera.image_width),
+                indexing="xy",
+            ),
             dim=-1,
         ).to(mean_2d.device)
-        
+
         render_color = torch.ones(*pix_coord.shape[:2], 3).to(mean_2d.device)
 
-        assert camera.image_height % self.tile_size == 0, "Image height must be divisible by the tile_size."
-        assert camera.image_width % self.tile_size == 0, "Image width must be divisible by the tile_size."
+        assert (
+            camera.image_height % self.tile_size == 0
+        ), "Image height must be divisible by the tile_size."
+        assert (
+            camera.image_width % self.tile_size == 0
+        ), "Image width must be divisible by the tile_size."
         for h in range(0, camera.image_height, self.tile_size):
             for w in range(0, camera.image_width, self.tile_size):
                 # check if the rectangle penetrate the tile
                 over_tl = rect[0][..., 0].clip(min=w), rect[0][..., 1].clip(min=h)
-                over_br = rect[1][..., 0].clip(max=w+self.tile_size-1), rect[1][..., 1].clip(max=h+self.tile_size-1)
-                
+                over_br = rect[1][..., 0].clip(max=w + self.tile_size - 1), rect[1][
+                    ..., 1
+                ].clip(max=h + self.tile_size - 1)
+
                 # a binary mask indicating projected Gaussians that lie in the current tile
                 in_mask = (over_br[0] > over_tl[0]) & (over_br[1] > over_tl[1])
                 if not in_mask.sum() > 0:
@@ -243,24 +263,110 @@ class GSRasterizer(object):
 
                 # ========================================================
                 # TODO: Sort the projected Gaussians that lie in the current tile by their depths, in ascending order
+                # 1. in_mask로 필터링된 인덱스 가져오기
+                in_indices = in_mask.nonzero(as_tuple=False).squeeze(
+                    -1
+                )  # shape: [M], M은 이 타일에 있는 가우시안 수
+
+                # 2. 해당 인덱스에 대한 depth 가져오기
+                tile_depths = depths[in_indices]  # shape: [M]
+
+                # 3. depth 기준으로 정렬 (오름차순)
+                sorted_idx = torch.argsort(tile_depths, dim=0)  # shape: [M]
+
+                # 4. 정렬된 인덱스를 적용
+                sorted_indices = in_indices[sorted_idx]  # shape: [M]
                 # ========================================================
-                
+
                 # ========================================================
                 # TODO: Compute the displacement vector from the 2D mean coordinates to the pixel coordinates
+                tile_pix = pix_coord[
+                    h : h + self.tile_size, w : w + self.tile_size
+                ]  # shape: [T, T, 2] (T = tile_size)
+
+                # 앞서 정렬된 가우시안 중심 (이미 정렬된 인덱스를 갖고 있다고 가정)
+                tile_mean_2d = mean_2d[sorted_indices]  # shape: [M, 2]
+
+                # tile_pix: [T, T, 2] → [1, T, T, 2]
+                tile_pix = tile_pix[None, ...]
+
+                # tile_mean_2d: [M, 2] → [M, 1, 1, 2]
+                tile_mean_2d = tile_mean_2d[:, None, None, :]
+
+                # displacement: [M, T, T, 2] = pixel - mean
+                displacement = tile_pix - tile_mean_2d
+
                 # ========================================================
 
                 # ========================================================
                 # TODO: Compute the Gaussian weight for each pixel in the tile
+                tile_cov_2d = cov_2d[sorted_indices]  # [M, 2, 2]
+                tile_disp = displacement  # [M, T, T, 2] from 이전 단계
+                M, T = (
+                    tile_disp.shape[0],
+                    tile_disp.shape[1],
+                )  # M = num_gaussians, T = tile_size
+
+                # 공분산 역행렬 계산
+                inv_cov = torch.inverse(tile_cov_2d)  # [M, 2, 2]
+
+                # 가우시안 weight 계산
+                # displacement: [M, T, T, 2]
+                # inv_cov: [M, 2, 2]
+                # 연산을 위해 아래처럼 reshape 후 batch matmul
+                disp_vec = tile_disp[..., None]  # [M, T, T, 2, 1]
+                disp_T = tile_disp[..., None, :]  # [M, T, T, 1, 2]
+
+                # [M, T, T, 1, 2] @ [M, 1, 1, 2, 2] -> broadcasted to [M, T, T, 1, 2]
+                tmp = torch.matmul(
+                    disp_T, inv_cov[:, None, None, :, :]
+                )  # [M, T, T, 1, 2]
+                mahalanobis_sq = (
+                    torch.matmul(tmp, disp_vec).squeeze(-1).squeeze(-1)
+                )  # [M, T, T]
+
+                # Gaussian weight (unnormalized)
+                weights = torch.exp(-0.5 * mahalanobis_sq)  # [M, T, T]
                 # ========================================================
 
                 # ========================================================
                 # TODO: Perform alpha blending
-                tile_color = None
+                # [M, T, T] → [M, T, T, 1]
+                weights = weights[..., None]  # shape: [M, T, T, 1]
+
+                # 색상, 불투명도 준비
+                tile_color_rgb = color[sorted_indices]  # [M, 3]
+                tile_opacity = opacities[sorted_indices]  # [M, 1]
+
+                # [M, 1, 1, 3] & [M, 1, 1, 1] for broadcasting
+                tile_color_rgb = tile_color_rgb[:, None, None, :]  # [M, 1, 1, 3]
+                tile_opacity = tile_opacity[:, None, None, :]  # [M, 1, 1, 1]
+
+                # 실제 alpha 값: weight * opacity
+                alpha = weights * tile_opacity  # [M, T, T, 1]
+                rgb = weights * tile_color_rgb  # [M, T, T, 3]
+
+                # 초기 색상/알파 누적값
+                acc_color = torch.zeros(T, T, 3, device=color.device)
+                acc_alpha = torch.zeros(T, T, 1, device=color.device)
+
+                # 가우시안 하나씩 alpha blending (깊은 것부터 얕은 것 순으로)
+                for i in range(alpha.shape[0]):
+                    a = alpha[i]  # [T, T, 1]
+                    c = rgb[i]  # [T, T, 3]
+
+                    acc_color = c * a + acc_color * (1 - a)
+                    acc_alpha = a + acc_alpha * (1 - a)
+
+                tile_color = acc_color  # [T, T, 3]
                 # ========================================================
 
-                render_color[h:h+self.tile_size, w:w+self.tile_size] = tile_color.reshape(self.tile_size, self.tile_size, -1)
+                render_color[h : h + self.tile_size, w : w + self.tile_size] = (
+                    tile_color.reshape(self.tile_size, self.tile_size, -1)
+                )
 
         return render_color
+
 
 @torch.no_grad()
 def homogenize(points):
@@ -270,54 +376,60 @@ def homogenize(points):
     """
     return torch.cat([points, torch.ones_like(points[..., :1])], dim=-1)
 
+
 @torch.no_grad()
 def build_rotation(r):
-    norm = torch.sqrt(r[:,0]*r[:,0] + r[:,1]*r[:,1] + r[:,2]*r[:,2] + r[:,3]*r[:,3])
+    norm = torch.sqrt(
+        r[:, 0] * r[:, 0] + r[:, 1] * r[:, 1] + r[:, 2] * r[:, 2] + r[:, 3] * r[:, 3]
+    )
 
     q = r / norm[:, None]
 
-    R = torch.zeros((q.size(0), 3, 3), device='cuda')
+    R = torch.zeros((q.size(0), 3, 3), device="cuda")
 
     r = q[:, 0]
     x = q[:, 1]
     y = q[:, 2]
     z = q[:, 3]
 
-    R[:, 0, 0] = 1 - 2 * (y*y + z*z)
-    R[:, 0, 1] = 2 * (x*y - r*z)
-    R[:, 0, 2] = 2 * (x*z + r*y)
-    R[:, 1, 0] = 2 * (x*y + r*z)
-    R[:, 1, 1] = 1 - 2 * (x*x + z*z)
-    R[:, 1, 2] = 2 * (y*z - r*x)
-    R[:, 2, 0] = 2 * (x*z - r*y)
-    R[:, 2, 1] = 2 * (y*z + r*x)
-    R[:, 2, 2] = 1 - 2 * (x*x + y*y)
+    R[:, 0, 0] = 1 - 2 * (y * y + z * z)
+    R[:, 0, 1] = 2 * (x * y - r * z)
+    R[:, 0, 2] = 2 * (x * z + r * y)
+    R[:, 1, 0] = 2 * (x * y + r * z)
+    R[:, 1, 1] = 1 - 2 * (x * x + z * z)
+    R[:, 1, 2] = 2 * (y * z - r * x)
+    R[:, 2, 0] = 2 * (x * z - r * y)
+    R[:, 2, 1] = 2 * (y * z + r * x)
+    R[:, 2, 2] = 1 - 2 * (x * x + y * y)
     return R
+
 
 @torch.no_grad()
 def build_scaling_rotation(s, r):
     L = torch.zeros((s.shape[0], 3, 3), dtype=torch.float, device="cuda")
     R = build_rotation(r)
 
-    L[:,0,0] = s[:,0]
-    L[:,1,1] = s[:,1]
-    L[:,2,2] = s[:,2]
+    L[:, 0, 0] = s[:, 0]
+    L[:, 1, 1] = s[:, 1]
+    L[:, 2, 2] = s[:, 2]
 
     L = R @ L
     return L
+
 
 @torch.no_grad()
 def get_radius(cov2d):
     det = cov2d[:, 0, 0] * cov2d[:, 1, 1] - cov2d[:, 0, 1] * cov2d[:, 1, 0]
     mid = 0.5 * (cov2d[:, 0, 0] + cov2d[:, 1, 1])
-    lambda1 = mid + torch.sqrt((mid**2-det).clip(min=0.1))
-    lambda2 = mid - torch.sqrt((mid**2-det).clip(min=0.1))
+    lambda1 = mid + torch.sqrt((mid**2 - det).clip(min=0.1))
+    lambda2 = mid - torch.sqrt((mid**2 - det).clip(min=0.1))
     return 3.0 * torch.sqrt(torch.max(lambda1, lambda2)).ceil()
+
 
 @torch.no_grad()
 def get_rect(pix_coord, radii, width, height):
-    rect_min = (pix_coord - radii[:,None])
-    rect_max = (pix_coord + radii[:,None])
+    rect_min = pix_coord - radii[:, None]
+    rect_max = pix_coord + radii[:, None]
     rect_min[..., 0] = rect_min[..., 0].clip(0, width - 1.0)
     rect_min[..., 1] = rect_min[..., 1].clip(0, height - 1.0)
     rect_max[..., 0] = rect_max[..., 0].clip(0, width - 1.0)
