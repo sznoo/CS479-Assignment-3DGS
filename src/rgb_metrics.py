@@ -21,10 +21,11 @@ def compute_lpips_between_directories(pred_dir: Path, target_dir: Path) -> float
     Computes LPIPS between the image pairs under two directories.
     """
     lpips = LearnedPerceptualImagePatchSimilarity(
-        net_type='vgg',
+        net_type="vgg",
         normalize=True,
     ).cuda()
     return compute_metric_between_directories(pred_dir, target_dir, lpips)
+
 
 @torch.no_grad()
 def compute_psnr_between_directories(pred_dir: Path, target_dir: Path) -> float:
@@ -34,6 +35,7 @@ def compute_psnr_between_directories(pred_dir: Path, target_dir: Path) -> float:
     psnr = torchmetrics.PeakSignalNoiseRatio().cuda()
     return compute_metric_between_directories(pred_dir, target_dir, psnr)
 
+
 @torch.no_grad()
 def compute_ssim_between_directories(pred_dir: Path, target_dir: Path) -> float:
     """
@@ -42,9 +44,13 @@ def compute_ssim_between_directories(pred_dir: Path, target_dir: Path) -> float:
     ssim = torchmetrics.StructuralSimilarityIndexMeasure().cuda()
     return compute_metric_between_directories(pred_dir, target_dir, ssim)
 
+
 @torch.no_grad()
 def compute_metric_between_directories(
-    pred_dir: Path, target_dir: Path, metric_func: Callable, batch_size: int = 32,
+    pred_dir: Path,
+    target_dir: Path,
+    metric_func: Callable,
+    batch_size: int = 1,
 ) -> float:
     """
     Evaluates the given metric between the image pairs under two directories.
@@ -84,7 +90,6 @@ def compute_metric_between_directories(
         # convert PIL images to Numpy arrays
         pred = np.array(pred, dtype=np.float32) / 255.0
         target = np.array(target, dtype=np.float32) / 255.0
-
         # collect arrays
         pred_set.append(pred[np.newaxis])
         target_set.append(target[np.newaxis])
@@ -97,14 +102,16 @@ def compute_metric_between_directories(
     if pred_set.shape[-1] == 4:
         pred_set = pred_set[..., :3] * pred_set[..., -1:] + (1.0 - pred_set[..., -1:])
     if target_set.shape[-1] == 4:
-        target_set = target_set[..., :3] * target_set[..., -1:] + (1.0 - target_set[..., -1:])
+        target_set = target_set[..., :3] * target_set[..., -1:] + (
+            1.0 - target_set[..., -1:]
+        )
 
     # convert to torch.Tensor
     pred_set = torch.from_numpy(pred_set).permute(0, 3, 1, 2).cuda()
     target_set = torch.from_numpy(target_set).permute(0, 3, 1, 2).cuda()
-    assert len(pred_set) == len(target_set), (
-        f"Expected two datasets to have the same size. Got {len(pred_set)} and {len(target_set)} images."
-    )
+    assert len(pred_set) == len(
+        target_set
+    ), f"Expected two datasets to have the same size. Got {len(pred_set)} and {len(target_set)} images."
 
     # split datasets into batches
     num_batch = 1

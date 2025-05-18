@@ -1,5 +1,6 @@
 
-scene_names=("chair" "lego" "materials" "drums")
+# scene_names=("chair" "lego" "materials" "drums")
+scene_names=( "lego" "materials" "drums")
 
 for scene_name in "${scene_names[@]}"
 do

@@ -15,13 +15,14 @@ from src.rgb_metrics import (
     compute_ssim_between_directories,
 )
 
+
 def main() -> None:
 
     # Directory containing rendered images
     ref_root = Path("data/nerf_synthetic")
     out_root = Path("outputs")
     scene_types = ["chair", "lego", "materials", "drums"]
-    
+
     # Evaluate
     metrics_list = []
 
@@ -53,22 +54,18 @@ def main() -> None:
     lpips_avg /= len(scene_types)
     psnr_avg /= len(scene_types)
     ssim_avg /= len(scene_types)
-    metrics_list.append({
-        "scene": "average",
-        "lpips": lpips_avg,
-        "psnr": psnr_avg,
-        "ssim": ssim_avg
-    })
+    metrics_list.append(
+        {"scene": "average", "lpips": lpips_avg, "psnr": psnr_avg, "ssim": ssim_avg}
+    )
 
     # Save metrics to CSV
     csv_file = "./metrics.csv"
-    with open(csv_file, mode='w', newline='') as file:
+    with open(csv_file, mode="w", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=["scene", "lpips", "psnr", "ssim"])
         writer.writeheader()
         writer.writerows(metrics_list)
 
     print(f"Metrics saved to {csv_file}")
-
 
 
 if __name__ == "__main__":

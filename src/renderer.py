@@ -81,8 +81,8 @@ class GSRasterizer(object):
             mean_3d=mean_3d,
             cov_3d=cov_3d,
             w2c=world_to_camera,
-            f_x=camera.f_x,
-            f_y=camera.f_y,
+            fx=camera.f_x,
+            fy=camera.f_y,
         )
 
         # Compute pixel space coordinates of the projected Gaussian centers
@@ -165,8 +165,8 @@ class GSRasterizer(object):
         mean_3d: Float[torch.Tensor, "N 3"],
         cov_3d: Float[torch.Tensor, "N 3 3"],
         w2c: Float[torch.Tensor, "4 4"],
-        f_x: Float[torch.Tensor, ""],
-        f_y: Float[torch.Tensor, ""],
+        fx: Float[torch.Tensor, ""],
+        fy: Float[torch.Tensor, ""],
     ) -> Float[torch.Tensor, "N 2 2"]:
         """
         Projects 3D covariances to 2D image plane.
@@ -200,10 +200,10 @@ class GSRasterizer(object):
         y = mean_3d_view[:, 1]
         z = mean_3d_view[:, 2] + 1e-8  # 안전한 나눗셈
 
-        J[:, 0, 0] = f_x / z
-        J[:, 0, 2] = -f_x * x / (z**2)
-        J[:, 1, 1] = f_y / z
-        J[:, 1, 2] = -f_y * y / (z**2)
+        J[:, 0, 0] = fx / z
+        J[:, 0, 2] = -fx * x / (z**2)
+        J[:, 1, 1] = fy / z
+        J[:, 1, 2] = -fy * y / (z**2)
 
         cov_3d_wt = torch.matmul(cov_3d, W.T)
         cov_3d_view = torch.matmul(W.unsqueeze(0), cov_3d_wt)
@@ -263,102 +263,64 @@ class GSRasterizer(object):
 
                 # ========================================================
                 # TODO: Sort the projected Gaussians that lie in the current tile by their depths, in ascending order
-                # 1. in_mask로 필터링된 인덱스 가져오기
-                in_indices = in_mask.nonzero(as_tuple=False).squeeze(
-                    -1
-                )  # shape: [M], M은 이 타일에 있는 가우시안 수
-
-                # 2. 해당 인덱스에 대한 depth 가져오기
-                tile_depths = depths[in_indices]  # shape: [M]
-
-                # 3. depth 기준으로 정렬 (오름차순)
-                sorted_idx = torch.argsort(tile_depths, dim=0)  # shape: [M]
-
-                # 4. 정렬된 인덱스를 적용
-                sorted_indices = in_indices[sorted_idx]  # shape: [M]
+                in_indices = in_mask.nonzero(as_tuple=False).squeeze(-1)
+                tile_depths = depths[in_indices]
+                sorted_idx = torch.argsort(tile_depths, dim=0, descending=True)
+                sorted_indices = in_indices[sorted_idx]
                 # ========================================================
 
                 # ========================================================
                 # TODO: Compute the displacement vector from the 2D mean coordinates to the pixel coordinates
-                tile_pix = pix_coord[
-                    h : h + self.tile_size, w : w + self.tile_size
-                ]  # shape: [T, T, 2] (T = tile_size)
-
-                # 앞서 정렬된 가우시안 중심 (이미 정렬된 인덱스를 갖고 있다고 가정)
-                tile_mean_2d = mean_2d[sorted_indices]  # shape: [M, 2]
-
-                # tile_pix: [T, T, 2] → [1, T, T, 2]
+                tile_pix = pix_coord[h : h + self.tile_size, w : w + self.tile_size]
+                tile_mean_2d = mean_2d[sorted_indices]
                 tile_pix = tile_pix[None, ...]
-
-                # tile_mean_2d: [M, 2] → [M, 1, 1, 2]
                 tile_mean_2d = tile_mean_2d[:, None, None, :]
-
-                # displacement: [M, T, T, 2] = pixel - mean
                 displacement = tile_pix - tile_mean_2d
-
                 # ========================================================
 
                 # ========================================================
                 # TODO: Compute the Gaussian weight for each pixel in the tile
-                tile_cov_2d = cov_2d[sorted_indices]  # [M, 2, 2]
-                tile_disp = displacement  # [M, T, T, 2] from 이전 단계
+                tile_cov_2d = cov_2d[sorted_indices]
+                tile_disp = displacement
                 M, T = (
                     tile_disp.shape[0],
                     tile_disp.shape[1],
-                )  # M = num_gaussians, T = tile_size
+                )
 
-                # 공분산 역행렬 계산
                 inv_cov = torch.inverse(tile_cov_2d)  # [M, 2, 2]
 
-                # 가우시안 weight 계산
-                # displacement: [M, T, T, 2]
-                # inv_cov: [M, 2, 2]
-                # 연산을 위해 아래처럼 reshape 후 batch matmul
                 disp_vec = tile_disp[..., None]  # [M, T, T, 2, 1]
                 disp_T = tile_disp[..., None, :]  # [M, T, T, 1, 2]
 
-                # [M, T, T, 1, 2] @ [M, 1, 1, 2, 2] -> broadcasted to [M, T, T, 1, 2]
-                tmp = torch.matmul(
-                    disp_T, inv_cov[:, None, None, :, :]
-                )  # [M, T, T, 1, 2]
-                mahalanobis_sq = (
-                    torch.matmul(tmp, disp_vec).squeeze(-1).squeeze(-1)
-                )  # [M, T, T]
+                tmp = torch.matmul(disp_T, inv_cov[:, None, None, :, :])
+                mahalanobis_sq = torch.matmul(tmp, disp_vec).squeeze(-1).squeeze(-1)
 
-                # Gaussian weight (unnormalized)
-                weights = torch.exp(-0.5 * mahalanobis_sq)  # [M, T, T]
+                weights = torch.exp(-0.5 * mahalanobis_sq)
                 # ========================================================
 
                 # ========================================================
                 # TODO: Perform alpha blending
-                # [M, T, T] → [M, T, T, 1]
-                weights = weights[..., None]  # shape: [M, T, T, 1]
+                sorted_indices = sorted_indices.flip(0)
 
-                # 색상, 불투명도 준비
-                tile_color_rgb = color[sorted_indices]  # [M, 3]
-                tile_opacity = opacities[sorted_indices]  # [M, 1]
+                weights = weights.flip(0)
+                weights = weights[..., None]
+                c = color[sorted_indices]
+                o = opacities[sorted_indices]
+                c = c[:, None, None, :]
+                o = o[:, None, None, :]
 
-                # [M, 1, 1, 3] & [M, 1, 1, 1] for broadcasting
-                tile_color_rgb = tile_color_rgb[:, None, None, :]  # [M, 1, 1, 3]
-                tile_opacity = tile_opacity[:, None, None, :]  # [M, 1, 1, 1]
+                alpha = weights * o
 
-                # 실제 alpha 값: weight * opacity
-                alpha = weights * tile_opacity  # [M, T, T, 1]
-                rgb = weights * tile_color_rgb  # [M, T, T, 3]
+                tile_color = torch.zeros(T, T, 3, device=color.device)
+                acc_alpha = torch.ones(T, T, 1, device=color.device)
 
-                # 초기 색상/알파 누적값
-                acc_color = torch.zeros(T, T, 3, device=color.device)
-                acc_alpha = torch.zeros(T, T, 1, device=color.device)
-
-                # 가우시안 하나씩 alpha blending (깊은 것부터 얕은 것 순으로)
                 for i in range(alpha.shape[0]):
-                    a = alpha[i]  # [T, T, 1]
-                    c = rgb[i]  # [T, T, 3]
+                    a = alpha[i]
+                    col = c[i]
+                    tile_color += a * col * acc_alpha
+                    acc_alpha *= 1.0 - a
 
-                    acc_color = c * a + acc_color * (1 - a)
-                    acc_alpha = a + acc_alpha * (1 - a)
-
-                tile_color = acc_color  # [T, T, 3]
+                tile_color += acc_alpha * 1.0
                 # ========================================================
 
                 render_color[h : h + self.tile_size, w : w + self.tile_size] = (
